@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bug Bounty Vulnerability Checklist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar styling for better aesthetics */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; } /* slate-100 */
+        ::-webkit-scrollbar-thumb { background: #64748b; border-radius: 10px; } /* slate-500 */
+        ::-webkit-scrollbar-thumb:hover { background: #475569; } /* slate-600 */
+    </style>
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('Debug'); // Enable Firestore logging
+
+        // --- Global Firebase & App Variables (MANDATORY USE) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth, userId = null;
+        let isAuthReady = false;
+        
+        // --- Core Checklist Data ---
+        const VULNERABILITY_CHECKLIST = [
+            {
+                category: "1. Broken Access Control (A01:2021)",
+                icon: "🔒",
+                items: [
+                    { id: "A1_01", text: "IDOR (Insecure Direct Object Reference) - Check if object IDs (URL/body/param) can be swapped for unauthorized data." },
+                    { id: "A1_02", text: "BOLA (Broken Object Level Authorization) - Test API endpoints for access control issues using different user tokens." },
+                    { id: "A1_03", text: "BFLA (Broken Function Level Authorization) - Try accessing administrative or restricted functions without proper roles." },
+                    { id: "A1_04", text: "Path Traversal - Attempt to access files outside the intended directory (e.g., `/etc/passwd`) via input parameters." },
+                    { id: "A1_05", text: "HTTP Method Tampering - Change POST requests to GET (or vice-versa) to bypass security checks." },
+                    { id: "A1_06", text: "Mass Assignment - Try adding unauthorized fields (e.g., `isAdmin: true`) to request bodies." }
+                ]
+            },
+            {
+                category: "2. Injection Flaws (A03:2021)",
+                icon: "💉",
+                items: [
+                    { id: "I2_01", text: "SQL Injection (SQLi) - Test all database inputs for classic and blind SQLi payloads." },
+                    { id: "I2_02", text: "Stored/Persistent XSS - Inject payloads into forums, profiles, or comments to affect other users." },
+                    { id: "I2_03", text: "Reflected XSS - Inject payloads into URLs/forms that are immediately echoed back in the response." },
+                    { id: "I2_04", text: "DOM-based XSS - Analyze client-side JavaScript for unsafe use of user data (e.g., `innerHTML`, `document.write`)." },
+                    { id: "I2_05", text: "Command Injection - Test inputs that might be passed to operating system functions (e.g., `system()`, `exec()`)." },
+                    { id: "I2_06", text: "NoSQL Injection - Test parameter inputs for injection against NoSQL databases like MongoDB or Redis." }
+                ]
+            },
+            {
+                category: "3. Authentication & Session Failures (A07:2021)",
+                icon: "🔑",
+                items: [
+                    { id: "S3_01", text: "Brute Force Protection - Check if rate limits are applied to login, password reset, and MFA endpoints." },
+                    { id: "S3_02", text: "Weak Password Policy - Test if common/short passwords are allowed." },
+                    { id: "S3_03", text: "Session Token Security - Verify `Secure`, `HttpOnly`, and `SameSite` flags are set on session cookies." },
+                    { id: "S3_04", text: "Logout/Session Invalidation - Check if the session token is properly invalidated upon logout/password change." },
+                    { id: "S3_05", text: "Password Reset Logic Flaws - Test for token reuse, token leakage, or user enumeration during the reset flow." },
+                    { id: "S3_06", text: "MFA Bypass - Check if MFA can be bypassed by request manipulation (e.g., dropping the MFA parameter)." }
+                ]
+            },
+            {
+                category: "4. Security Misconfiguration (A05:2021)",
+                icon: "⚙️",
+                items: [
+                    { id: "M4_01", text: "Exposed Admin Interfaces - Look for common admin URLs (e.g., `/admin`, `/dashboard`, `/manager`)." },
+                    { id: "M4_02", text: "Default or Guessable Credentials - Test for default vendor accounts (e.g., admin:admin, tomcat:tomcat)." },
+                    { id: "M4_03", text: "Verbose Error Messages - Check if error pages leak internal server paths, stack traces, or database schema info." },
+                    { id: "M4_04", text: "Missing/Weak Security Headers - Check for missing `Content-Security-Policy`, `X-Frame-Options`, `HSTS`." },
+                    { id: "M4_05", text: "Misconfigured CORS - Test for overly permissive CORS policies (e.g., `Access-Control-Allow-Origin: *`)." },
+                    { id: "M4_06", text: "Unsecured Files/Directories - Check for exposed `.git` folders, backup files (`.bak`, `.zip`), or directory listings." }
+                ]
+            },
+            {
+                category: "5. Server-Side Request Forgery (SSRF) & Redirects (A10:2021)",
+                icon: "➡️",
+                items: [
+                    { id: "R5_01", text: "SSRF on URL parameters - Test inputs that fetch remote content (e.g., image import, webhook URL) for access to internal IPs." },
+                    { id: "R5_02", text: "SSRF via hidden inputs - Check server-side functionality that uses user-provided data as a source/target." },
+                    { id: "R5_03", text: "Open Redirect - Test if the application redirects to an arbitrary external URL via a parameter (e.g., `?next=`)." },
+                    { id: "R5_04", text: "Host Header Injection - Test for manipulating the Host header to exploit cache poisoning or password reset flaws." }
+                ]
+            },
+            {
+                category: "6. Business Logic Flaws",
+                icon: "🧠",
+                items: [
+                    { id: "B6_01", text: "Price/Quantity Manipulation - Test for changing prices, discounts, or quantities in e-commerce applications." },
+                    { id: "B6_02", text: "Race Conditions - Submit simultaneous requests (e.g., double spend, double-click on checkout) to bypass limits." },
+                    { id: "B6_03", text: "Account Enumeration - Check if the system leaks valid account existence during login/password reset attempts." },
+                    { id: "B6_04", text: "Workflow Bypass - Skip mandatory steps in a complex flow (e.g., bypass payment step in checkout)." }
+                ]
+            },
+            {
+                category: "7. Data and File Management",
+                icon: "📁",
+                items: [
+                    { id: "D7_01", text: "Unrestricted File Upload - Upload a webshell or malicious file type (e.g., `.php`, `.jsp`) and try to execute it." },
+                    { id: "D7_02", text: "Insecure Deserialization - Test inputs that might deserialize untrusted data (e.g., Java objects, PHP sessions)." },
+                    { id: "D7_03", text: "Metadata Exposure - Check file uploads (images/documents) for sensitive EXIF or metadata." },
+                    { id: "D7_04", text: "XML External Entity (XXE) - Test XML parsing functions for ability to read local files or perform SSRF." }
+                ]
+            }
+        ];
+
+        // --- Application State ---
+        let checkedState = {}; // Stores { "A1_01": true, ... }
+        let checklistHtmlContainer;
+        let authSpinner;
+        let userIdDisplay;
+
+        // --- Firebase Firestore Functions ---
+
+        const checklistPath = (uid) => `artifacts/${appId}/users/${uid}/bug_bounty_checklist`;
+        const checklistDocumentRef = (uid) => doc(db, checklistPath(uid), 'state');
+
+        /**
+         * Saves the current checklist state to Firestore.
+         */
+        const saveChecklistState = async () => {
+            if (!userId || !db) {
+                console.error("Firestore not initialized or user not logged in.");
+                return;
+            }
+            try {
+                await setDoc(checklistDocumentRef(userId), { checked: checkedState }, { merge: true });
+                console.log("Checklist state saved successfully.");
+            } catch (error) {
+                console.error("Error saving checklist state:", error);
+            }
+        };
+
+        /**
+         * Loads the checklist state from Firestore using onSnapshot for real-time updates.
+         */
+        const loadChecklistState = () => {
+            if (!userId || !db) {
+                console.error("Cannot load state: user not logged in or db not initialized.");
+                return;
+            }
+
+            const unsubscribe = onSnapshot(checklistDocumentRef(userId), (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    const data = docSnapshot.data();
+                    checkedState = data.checked || {};
+                    console.log("Checklist state loaded:", checkedState);
+                    renderChecklist(); // Re-render the UI with the loaded state
+                } else {
+                    console.log("No checklist state found, starting fresh.");
+                    checkedState = {};
+                    renderChecklist();
+                }
+            }, (error) => {
+                console.error("Error listening to checklist state:", error);
+            });
+
+            // Note: In a larger app, you'd manage this unsubscribe function.
+            // For a single-file app like this, it's fine to just let it run.
+        };
+
+        // --- UI Rendering and Interaction ---
+
+        const handleCheckChange = (event) => {
+            const itemId = event.target.value;
+            checkedState[itemId] = event.target.checked;
+            saveChecklistState(); // Save state immediately
+            // The renderChecklist call will happen via onSnapshot, ensuring data consistency.
+        };
+
+        const toggleCategory = (categoryId) => {
+            const content = document.getElementById(`content-${categoryId}`);
+            const chevron = document.getElementById(`chevron-${categoryId}`);
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                chevron.classList.add('rotate-90');
+            } else {
+                content.classList.add('hidden');
+                chevron.classList.remove('rotate-90');
+            }
+        };
+
+        const renderChecklist = (searchTerm = '') => {
+            if (!checklistHtmlContainer) return;
+
+            const lowerCaseSearchTerm = searchTerm.toLowerCase().trim();
+            let html = '';
+
+            VULNERABILITY_CHECKLIST.forEach((category, catIndex) => {
+                const categoryId = `cat-${catIndex}`;
+                let categoryMatches = false;
+                let itemHtml = '';
+
+                category.items.forEach(item => {
+                    const itemText = item.text.toLowerCase();
+                    const isChecked = checkedState[item.id] || false;
+                    const isMatch = itemText.includes(lowerCaseSearchTerm);
+
+                    if (lowerCaseSearchTerm === '' || isMatch) {
+                        categoryMatches = true;
+                        itemHtml += `
+                            <label for="${item.id}" class="flex items-start p-3 hover:bg-slate-50 transition duration-150 cursor-pointer border-b border-slate-100 last:border-b-0">
+                                <input type="checkbox" id="${item.id}" value="${item.id}" ${isChecked ? 'checked' : ''} class="mt-1 h-5 w-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 bg-white" onchange="window.handleCheckChange(event)">
+                                <span class="ml-3 text-sm flex-1 ${isChecked ? 'line-through text-slate-500' : 'text-slate-800'}">
+                                    <strong class="font-semibold text-slate-900">${item.id.split('_')[0]} | ${item.text.substring(0, item.text.indexOf(' - '))}</strong>
+                                    ${item.text.substring(item.text.indexOf(' - '))}
+                                </span>
+                                <span class="ml-auto text-xs font-medium px-2 py-1 rounded-full ${isChecked ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
+                                    ${isChecked ? 'Found / Mitigated' : 'Pending'}
+                                </span>
+                            </label>
+                        `;
+                    }
+                });
+
+                // Only render the category if it matches the search or has matching items
+                if (lowerCaseSearchTerm === '' || categoryMatches) {
+                    html += `
+                        <div id="${categoryId}" class="mb-4 bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
+                            <button onclick="window.toggleCategory('${categoryId}')" class="w-full text-left flex items-center justify-between p-4 bg-slate-100 hover:bg-slate-200 transition duration-150">
+                                <h2 class="text-lg font-bold text-slate-800 flex items-center">
+                                    <span class="mr-3 text-2xl">${category.icon}</span>
+                                    ${category.category}
+                                </h2>
+                                <svg id="chevron-${categoryId}" class="w-5 h-5 text-slate-500 transition-transform duration-300 transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                            </button>
+                            <div id="content-${categoryId}" class="transition-all duration-500 ${lowerCaseSearchTerm === '' ? '' : 'hidden'}">
+                                ${itemHtml}
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+
+            if (html === '') {
+                 html = `<p class="text-center p-8 text-slate-500 text-lg">No checklist items match your search term.</p>`;
+            }
+
+            checklistHtmlContainer.innerHTML = html;
+        };
+
+        const handleSearch = (event) => {
+            renderChecklist(event.target.value);
+        };
+
+        // Expose functions to the global scope for inline event handlers
+        window.handleCheckChange = handleCheckChange;
+        window.toggleCategory = toggleCategory;
+
+        // --- Initialization ---
+
+        const initFirebase = async () => {
+            if (!firebaseConfig) {
+                console.error("Firebase config is missing.");
+                // Render list without persistence if config is missing
+                isAuthReady = true;
+                userId = crypto.randomUUID(); // Use a dummy ID for rendering purposes
+                authSpinner.classList.add('hidden');
+                userIdDisplay.textContent = 'Demo Mode (No Persistence)';
+                userIdDisplay.classList.remove('bg-gray-200');
+                userIdDisplay.classList.add('bg-red-100', 'text-red-700');
+                renderChecklist();
+                return;
+            }
+
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase authentication error:", error);
+                // Fallback to anonymous sign-in if custom token fails
+                try {
+                    await signInAnonymously(auth);
+                } catch (anonError) {
+                    console.error("Anonymous sign-in failed:", anonError);
+                }
+            }
+
+            onAuthStateChanged(auth, (user) => {
+                isAuthReady = true;
+                authSpinner.classList.add('hidden');
+                if (user) {
+                    userId = user.uid;
+                    userIdDisplay.textContent = `User ID: ${userId}`;
+                    userIdDisplay.classList.remove('bg-gray-200');
+                    userIdDisplay.classList.add('bg-indigo-100', 'text-indigo-700');
+                    loadChecklistState();
+                } else {
+                    userId = null;
+                    userIdDisplay.textContent = 'Signed out';
+                    userIdDisplay.classList.remove('bg-gray-200');
+                    userIdDisplay.classList.add('bg-red-100', 'text-red-700');
+                    renderChecklist(); // Render an empty checklist or placeholder
+                }
+            });
+        };
+
+        window.onload = () => {
+            checklistHtmlContainer = document.getElementById('checklist-container');
+            authSpinner = document.getElementById('auth-spinner');
+            userIdDisplay = document.getElementById('user-id-display');
+            document.getElementById('search-input').addEventListener('input', handleSearch);
+
+            // Initialize Firebase and load user data
+            initFirebase();
+        };
+
+    </script>
+</head>
+<body class="bg-gray-100 font-sans antialiased min-h-screen">
+    <div class="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Header & Instructions -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-indigo-700 tracking-tight mb-2">
+                Bug Bounty Hunter's Web Checklist
+            </h1>
+            <p class="text-lg text-slate-600">
+                Systematically hunt for vulnerabilities. Your progress is saved automatically via Firestore.
+            </p>
+        </header>
+
+        <!-- Search and Auth Status Bar -->
+        <div class="mb-8 p-4 bg-white rounded-xl shadow-md flex flex-col md:flex-row gap-4 items-center">
+            <input type="text" id="search-input" placeholder="Filter by vulnerability name or description..."
+                   class="flex-1 w-full md:w-auto p-3 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm transition"
+                   oninput="window.handleSearch(event)">
+            
+            <div id="auth-status" class="flex items-center space-x-2">
+                <div id="auth-spinner" class="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+                <span id="user-id-display" class="px-3 py-1 text-xs font-semibold rounded-full bg-gray-200 text-gray-700 transition duration-300">
+                    Authenticating...
+                </span>
+            </div>
+        </div>
+
+        <!-- Checklist Container -->
+        <div id="checklist-container" class="space-y-4">
+            <!-- Checklist content will be rendered here by JavaScript -->
+            <div class="text-center p-8 text-slate-500 text-lg">
+                Loading checklist. Please wait...
+            </div>
+        </div>
+
+        <!-- Footer for context -->
+        <footer class="mt-12 text-center text-sm text-slate-500">
+            <p>Data persistence powered by Google Firestore and your unique user ID.</p>
+        </footer>
+    </div>
+</body>
+</html>
