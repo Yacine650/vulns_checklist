@@ -1,364 +1,1860 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bug Bounty Vulnerability Checklist</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Custom scrollbar styling for better aesthetics */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #f1f5f9; } /* slate-100 */
-        ::-webkit-scrollbar-thumb { background: #64748b; border-radius: 10px; } /* slate-500 */
-        ::-webkit-scrollbar-thumb:hover { background: #475569; } /* slate-600 */
-    </style>
-    <script type="module">
-        // --- Firebase Imports ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  ChevronRight, ChevronDown, Search, Filter, Upload, Download, FileText,
+  X, Menu, Save, AlertTriangle, Info, Copy, Check
+} from 'lucide-react';
 
-        setLogLevel('Debug'); // Enable Firestore logging
+// --- DATA ---
+// The provided JSON data is embedded directly into the app
+const checklistData = {
+  "meta": {
+    "title": "Bug Bounty Web App Vulnerability Checklist",
+    "version": "2025-11-11",
+    "description": "Organized, ordered checklist of web-application vulnerabilities and test cases for bug-bounty hunting. Non-destructive PoC payloads only."
+  },
+  "categories": [
+    {
+      "id": "recon",
+      "title": "Reconnaissance & Info Gathering",
+      "priority": "High",
+      "description": "Discover surface area, endpoints, and public leaks.",
+      "items": [
+        {
+          "id": "subdomains",
+          "title": "Subdomain enumeration",
+          "priority": "High",
+          "entry_points": ["DNS", "cert transparency", "permutation lists"],
+          "test_steps": [
+            "Collect domain list and run passive enumeration (crt.sh, SecurityTrails).",
+            "Run active discovery: `ffuf` or `subfinder` with wordlists.",
+            "Resolve and probe discovered hosts for HTTP/S."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["new hosts responding on 80/443", "unexpected app banners"],
+          "impact": "Additional targets & hidden admin panels.",
+          "remediation": ["Inventory subdomains; remove unused hosts; restrict sensitive services."],
+          "owasp": [],
+          "cwe": [],
+          "references": [
+            {"title":"Subdomain enumeration guide","url":"https://owasp.org/www-project-top-ten/"}
+          ]
+        },
+        {
+          "id": "robots",
+          "title": "Robots.txt & exposed resources",
+          "priority": "Medium",
+          "entry_points": ["/robots.txt", "/.git", "/.env", "public s3"],
+          "test_steps": [
+            "Fetch /robots.txt and review disallowed paths.",
+            "Enumerate listed paths, test for access and data leaks.",
+            "Check for exposed backups (.zip, .tar.gz) and config files."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["sensitive endpoints accessible", "downloadable backups"],
+          "impact": "Info leakage, credential exposure.",
+          "remediation": ["Do not list sensitive paths in public files; protect with auth."],
+          "owasp": [],
+          "cwe": [],
+          "references": [
+            {"title":"Handling robots.txt securely","url":"https://developer.mozilla.org/"}
+          ]
+        },
+        {
+          "id": "public-leaks",
+          "title": "Public code / secret leaks",
+          "priority": "High",
+          "entry_points": ["GitHub", "paste sites", "public S3 buckets"],
+          "test_steps": [
+            "Search repo history and public paste sites for domain and API keys.",
+            "Use `gitrob`/`truffleHog` on public code for secrets.",
+            "Test discovered keys in a safe manner (read-only checks)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["API keys, database connection strings, private config files"],
+          "impact": "Unauthorized access to resources.",
+          "remediation": ["Rotate leaked credentials; add secrets scanning; remove from VCS."],
+          "owasp": [],
+          "cwe": [],
+          "references": [
+            {"title":"Secrets detection best practices","url":"https://owasp.org/www-project-top-ten/"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "auth",
+      "title": "Authentication & Account Management",
+      "priority": "High",
+      "description": "Check authentication flows, password policies, MFA, and reset paths.",
+      "items": [
+        {
+          "id": "weak-passwords",
+          "title": "Weak password policy / brute force",
+          "priority": "High",
+          "entry_points": ["/login", "API /auth endpoints"],
+          "test_steps": [
+            "Check password complexity rules on registration.",
+            "Attempt low-rate password guessing; observe lockouts.",
+            "Test common passwords against accounts."
+          ],
+          "payloads": ["password1", "12345678", "P@ssw0rd"],
+          "vulnerable_signs": ["no lockout, no rate-limit, weak password acceptance"],
+          "impact": "Account takeover.",
+          "remediation": ["Enforce strong passwords; account lockout; MFA."],
+          "owasp": ["A07:2021 — Identification and Authentication Failures"],
+          "cwe": ["CWE-307"],
+          "references": [
+            {"title":"OWASP Authentication Cheat Sheet","url":"https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html"}
+          ]
+        },
+        {
+          "id": "mfa",
+          "title": "MFA bypass & enforcement issues",
+          "priority": "High",
+          "entry_points": ["MFA setup, backup codes, SMS OTP reset"],
+          "test_steps": [
+            "Attempt to disable MFA via account recovery paths.",
+            "Check for reuse/weakness of backup codes.",
+            "Test SMS OTP race conditions or predictable OTPs."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["MFA disabled without verification", "backup codes stored in plaintext"],
+          "impact": "Account takeover despite MFA.",
+          "remediation": ["Protect MFA changes with re-auth and out-of-band confirmation."],
+          "owasp": ["A07:2021"],
+          "cwe": [],
+          "references": [
+            {"title":"MFA best practices","url":"https://cisa.gov/mfa"}
+          ]
+        },
+        {
+          "id": "password-reset",
+          "title": "Password reset & account takeover via reset flows",
+          "priority": "High",
+          "entry_points": ["/reset-password", "/forgot-password API"],
+          "test_steps": [
+            "Initiate password reset and observe token delivery method.",
+            "Test predictable tokens or long-lived tokens.",
+            "Attempt reset via email/phone parameter tampering."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["tokens in URL without expiry", "reset without verifying ownership"],
+          "impact": "Account takeover.",
+          "remediation": ["Use single-use expiring tokens, require identity verification."],
+          "owasp": ["A07:2021"],
+          "cwe": ["CWE-639"],
+          "references": [
+            {"title":"Password reset security","url":"https://owasp.org/www-project-cheat-sheets/"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session",
+      "title": "Session Management & Cookies",
+      "priority": "High",
+      "description": "Session fixation, cookie flags, token rotation and exposure.",
+      "items": [
+        {
+          "id": "cookie-flags",
+          "title": "Missing Secure / HttpOnly / SameSite flags",
+          "priority": "High",
+          "entry_points": ["Any authenticated response Set-Cookie header"],
+          "test_steps": [
+            "Check Set-Cookie values for Secure, HttpOnly, SameSite attributes.",
+            "Test cookie access via JavaScript to detect HttpOnly missing."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["Cookies accessible via JS, sent over HTTP"],
+          "impact": "Session theft, XSS amplification.",
+          "remediation": ["Set Secure, HttpOnly, and appropriate SameSite on cookies."],
+          "owasp": [],
+          "cwe": ["CWE-311"],
+          "references": [
+            {"title":"Cookie attributes guide","url":"https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie"}
+          ]
+        },
+        {
+          "id": "session-fixation",
+          "title": "Session fixation & lack of session rotation",
+          "priority": "Medium",
+          "entry_points": ["/login", "session token endpoints"],
+          "test_steps": [
+            "Provide a predetermined session id and then authenticate — check if id is accepted.",
+            "Verify session id rotation on privilege change (login/logout)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["same session id before and after auth"],
+          "impact": "Account takeover.",
+          "remediation": ["Rotate session identifiers after login and privilege changes."],
+          "owasp": [],
+          "cwe": ["CWE-384"],
+          "references": []
+        },
+        {
+          "id": "token-expiry",
+          "title": "Long-lived or non-expiring tokens",
+          "priority": "Medium",
+          "entry_points": ["JWTs, API tokens"],
+          "test_steps": [
+            "Inspect token expiry (exp) on JWTs; check refresh flow.",
+            "Test revocation by invalidating tokens (logout) and retrying."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["long exp claims, no revocation endpoint"],
+          "impact": "Persistent access after compromise.",
+          "remediation": ["Short lifetimes; refresh tokens with revoke support."],
+          "owasp": [],
+          "cwe": [],
+          "references": [
+            {"title":"JWT security considerations","url":"https://auth0.com/learn/json-web-tokens/"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "access-control",
+      "title": "Access Control & Authorization (IDOR)",
+      "priority": "High",
+      "description": "Horizontal/vertical access control issues and direct object references.",
+      "items": [
+        {
+          "id": "idor",
+          "title": "Insecure Direct Object References (IDOR)",
+          "priority": "High",
+          "entry_points": ["/user/{id}", "file download endpoints"],
+          "test_steps": [
+            "Enumerate object IDs (1,2,3..) and request records of other users.",
+            "Tamper `id` parameters client-side (URL, JSON body) and observe access."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["Access to other users' data returned", "no ownership checks"],
+          "impact": "Data disclosure and account takeover.",
+          "remediation": ["Authorize per-request; map ids to user context; enforce ACLs."],
+          "owasp": ["A01:2021 — Broken Access Control"],
+          "cwe": ["CWE-639"],
+          "references": [
+            {"title":"IDOR testing checklist","url":"https://owasp.org/www-community/attacks/IDOR"}
+          ]
+        },
+        {
+          "id": "horizontal",
+          "title": "Horizontal privilege escalation",
+          "priority": "High",
+          "entry_points": ["Role change parameters, UI toggles"],
+          "test_steps": [
+            "Attempt actions available to peer accounts (e.g., admin-only endpoints) from low-privilege accounts.",
+            "Try parameter tampering to escalate privileges."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["actions succeed without proper role checks"],
+          "impact": "Unauthorized actions by regular users.",
+          "remediation": ["Centralize authorization; role-based checks on server."],
+          "owasp": ["A01:2021"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "vertical",
+          "title": "Vertical privilege escalation (user->admin)",
+          "priority": "High",
+          "entry_points": ["admin endpoints, privileged APIs"],
+          "test_steps": [
+            "Access admin APIs while authenticated as a normal user.",
+            "Check hidden admin UI code or endpoints (discovered via recon)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["admin data returned; success codes on admin endpoints"],
+          "impact": "Full system compromise.",
+          "remediation": ["Enforce server-side checks verifying roles and permissions."],
+          "owasp": ["A01:2021"],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "input-injection",
+      "title": "Input Validation & Injection",
+      "priority": "High",
+      "description": "SQLi, NoSQLi, command injection and related input-based attacks.",
+      "items": [
+        {
+          "id": "sqli",
+          "title": "SQL Injection (SQLi)",
+          "priority": "High",
+          "entry_points": ["query params, POST bodies, headers"],
+          "test_steps": [
+            "Identify input reflected in queries; test boolean & error-based probes.",
+            "Use `sqlmap` in non-destructive mode for confirmation (read-only).",
+            "Check prepared statements or ORM parameterization."
+          ],
+          "payloads": ["' OR '1'='1", "'; SELECT version(); --"],
+          "vulnerable_signs": ["SQL errors, unexpected rows, time-based responses"],
+          "impact": "Data exfiltration, auth bypass, RCE in some stacks.",
+          "remediation": ["Use parameterized queries, input validation, least privilege DB accounts."],
+          "owasp": ["A03:2021 — Injection"],
+          "cwe": ["CWE-89"],
+          "references": [
+            {"title":"SQL Injection prevention","url":"https://owasp.org/www-community/attacks/SQL_Injection"}
+          ]
+        },
+        {
+          "id": "nosqli",
+          "title": "NoSQL Injection",
+          "priority": "Medium",
+          "entry_points": ["JSON-based APIs, MongoDB query endpoints"],
+          "test_steps": [
+            "Inject query operators (`$ne`, `$gt`) into JSON payloads.",
+            "Observe if filtering behaves unexpectedly or returns broader results."
+          ],
+          "payloads": ["{\"username\":{\"$ne\":null}}", "{\"age\": {\"$gt\": 0}}"],
+          "vulnerable_signs": ["unexpected dataset returned", "filters ignored"],
+          "impact": "Data disclosure or auth bypass.",
+          "remediation": ["Strict schema validation, whitelist allowed fields."],
+          "owasp": ["A03:2021"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "cmd-injection",
+          "title": "Command injection / OS command execution",
+          "priority": "High",
+          "entry_points": ["file name params, diagnostic commands, ping endpoints"],
+          "test_steps": [
+            "Find inputs passed to OS commands; try injecting shell metacharacters.",
+            "Use non-destructive payloads (e.g., `; echo TEST`) to observe output."
+          ],
+          "payloads": ["; echo INJECTION_TEST", "&& echo INJECTION_TEST"],
+          "vulnerable_signs": ["system output in response", "command errors"],
+          "impact": "RCE and full server compromise.",
+          "remediation": ["Avoid shelling out; use safe APIs; sanitize inputs."],
+          "owasp": ["A03:2021"],
+          "cwe": ["CWE-78"],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "xss",
+      "title": "Cross-Site Scripting (XSS)",
+      "priority": "High",
+      "description": "Reflected, Stored and DOM-based XSS checks.",
+      "items": [
+        {
+          "id": "reflected-xss",
+          "title": "Reflected XSS",
+          "priority": "High",
+          "entry_points": ["/search", "query strings", "error messages"],
+          "test_steps": [
+            "Inject `<script>alert(1)</script>` into parameters and view response.",
+            "If filtered, test encoded or attribute-based payloads.",
+            "Inspect DOM for unescaped input insertion (DOM-XSS)."
+          ],
+          "payloads": ["<script>alert(1)</script>", "'\"><img src=x onerror=alert(1)>"],
+          "vulnerable_signs": ["alert dialogs, unescaped script tags", "JS inserted in DOM"],
+          "impact": "Session theft, CSRF forgery, account compromise.",
+          "remediation": ["Context-aware output encoding; CSP; sanitize inputs."],
+          "owasp": ["A03:2021 — Injection (XSS)"],
+          "cwe": ["CWE-79"],
+          "references": [
+            {"title":"OWASP XSS","url":"https://owasp.org/www-community/attacks/xss/"}
+          ]
+        },
+        {
+          "id": "stored-xss",
+          "title": "Stored XSS (persistent)",
+          "priority": "High",
+          "entry_points": ["Comments, profile fields, message boards"],
+          "test_steps": [
+            "Submit payloads to persistent inputs; view results as another user.",
+            "Check content sanitization during rendering and storage."
+          ],
+          "payloads": ["<svg/onload=alert(1)>", "<script>alert(1)</script>"],
+          "vulnerable_signs": ["payload executes when viewed by other users"],
+          "impact": "Wider compromise of user base.",
+          "remediation": ["Sanitize input on storage and encode on output."],
+          "owasp": ["A03:2021"],
+          "cwe": ["CWE-79"],
+          "references": []
+        },
+        {
+          "id": "dom-xss",
+          "title": "DOM-based XSS",
+          "priority": "Medium",
+          "entry_points": ["client-side rendering, hash/fragment parameters"],
+          "test_steps": [
+            "Test JS-manipulated DOM with payloads in URL fragments and DOM-sourced inputs.",
+            "Use browser devtools to trace sources (document.write, innerHTML)."
+          ],
+          "payloads": ["#<img src=x onerror=alert(1)>"],
+          "vulnerable_signs": ["payload executed via client-side operations"],
+          "impact": "Privilege misuse in client context.",
+          "remediation": ["Avoid dangerous DOM APIs; sanitize before insertion."],
+          "owasp": ["A03:2021"],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "csrf",
+      "title": "Cross-Site Request Forgery (CSRF)",
+      "priority": "Medium",
+      "description": "CSRF protections, anti-CSRF tokens and SameSite attributes.",
+      "items": [
+        {
+          "id": "csrf-token",
+          "title": "Missing CSRF tokens on state-changing endpoints",
+          "priority": "High",
+          "entry_points": ["POST/PUT/DELETE forms, API endpoints"],
+          "test_steps": [
+            "Attempt CSRF by forging a form submission from attacker origin.",
+            "Check if state-changing endpoints accept requests without valid tokens."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["state changes succeed from external origin", "lack of anti-CSRF token"],
+          "impact": "Unauthorized actions on behalf of victim.",
+          "remediation": ["Implement per-session anti-CSRF tokens or SameSite cookies."],
+          "owasp": [],
+          "cwe": ["CWE-352"],
+          "references": []
+        },
+        {
+          "id": "cors-csrf",
+          "title": "CORS misconfigurations enabling CSRF-like attacks",
+          "priority": "Medium",
+          "entry_points": ["CORS allowed origins"],
+          "test_steps": [
+            "Inspect `Access-Control-Allow-Origin` and `Allow-Credentials` headers.",
+            "Test cross-origin requests that include credentials."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["wildcard origin with credentials allowed"],
+          "impact": "Cross-origin request abuse.",
+          "remediation": ["Avoid `*` with credentials; restrict origins."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "file-handling",
+      "title": "File Uploads, Inclusion & Disclosure",
+      "priority": "High",
+      "description": "Upload validations, LFI/RFI, path traversal and direct downloads.",
+      "items": [
+        {
+          "id": "unrestricted-upload",
+          "title": "Unrestricted file upload",
+          "priority": "High",
+          "entry_points": ["/upload", "admin upload endpoints"],
+          "test_steps": [
+            "Upload files with different extensions (jpg, php, svg) and check execution.",
+            "Try double extensions: `shell.php.jpg` and content-type mismatches.",
+            "Test storage paths and attempt to access uploaded file via URL."
+          ],
+          "payloads": ["simple SVG with `<script>` (non-destructive)"],
+          "vulnerable_signs": ["uploaded files accessible and executable", "mime mismatch accepted"],
+          "impact": "Remote code execution or stored XSS.",
+          "remediation": ["Whitelist file types, validate content, store outside webroot."],
+          "owasp": ["A04:2021 — Insecure Design"],
+          "cwe": ["CWE-434"],
+          "references": []
+        },
+        {
+          "id": "lfi-rfi",
+          "title": "Local/Remote File Inclusion (LFI/RFI) & path traversal",
+          "priority": "High",
+          "entry_points": ["include parameters, file fetch endpoints"],
+          "test_steps": [
+            "Test path traversal patterns (`../`, `%2e%2e%2f`) on file params.",
+            "Attempt remote include if `url` parameter exists (RFI)."
+          ],
+          "payloads": ["../../../../etc/passwd", "%2e%2e%2fetc%2fpasswd"],
+          "vulnerable_signs": ["file contents returned, errors revealing file paths"],
+          "impact": "Information disclosure, RCE (via LFI + upload).",
+          "remediation": ["Canonicalize paths, deny traversal, avoid include-from-URL."],
+          "owasp": ["A01:2021"],
+          "cwe": ["CWE-22"],
+          "references": []
+        },
+        {
+          "id": "exposed-backups",
+          "title": "Exposed backups & sensitive files",
+          "priority": "Medium",
+          "entry_points": ["/backups", ".git", ".env"],
+          "test_steps": [
+            "Brute-force common file names and directories; check for public backups.",
+            "Request `.env`, `.git/config`, database dumps where possible."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["downloadable backups, creds present in files"],
+          "impact": "Credential leakage and data exposure.",
+          "remediation": ["Remove backups from webroot; restrict access."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "ssrf",
+      "title": "Server-Side Request Forgery (SSRF)",
+      "priority": "High",
+      "description": "Server-side fetch functionality abuse (internal network access).",
+      "items": [
+        {
+          "id": "basic-ssrf",
+          "title": "SSRF via URL fetch parameters",
+          "priority": "High",
+          "entry_points": ["image fetch, url preview, webhook config"],
+          "test_steps": [
+            "Inject attacker-controlled URL and observe server fetching behavior.",
+            "Attempt internal IP addresses (127.0.0.1, 169.254.169.254) to probe internal services."
+          ],
+          "payloads": ["http://127.0.0.1:80/", "http://169.254.169.254/latest/meta-data/"],
+          "vulnerable_signs": ["request succeeds to internal addresses, returned content from internal services"],
+          "impact": "Internal service access and metadata leak.",
+          "remediation": ["Whitelist external domains, block internal IP ranges, network egress controls."],
+          "owasp": ["A05:2021 — Security Misconfiguration"],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "rce-deser",
+      "title": "Remote Code Execution & Insecure Deserialization",
+      "priority": "High",
+      "description": "Deserialization of untrusted data and unsafe runtime evals.",
+      "items": [
+        {
+          "id": "insecure-deserialization",
+          "title": "Insecure deserialization",
+          "priority": "High",
+          "entry_points": ["session objects, serialized API parameters"],
+          "test_steps": [
+            "Find serialized data in cookies or endpoints; do not provide gadget chains.",
+            "Test for unexpected behavior when modifying serialized payload fields (non-destructive)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["app exceptions, crash, code path differences when serialized fields changed"],
+          "impact": "RCE or logic manipulation.",
+          "remediation": ["Avoid deserializing untrusted data; use safe formats and validation."],
+          "owasp": ["A06:2021 — Vulnerable and Outdated Components / Insecure Design"],
+          "cwe": ["CWE-502"],
+          "references": []
+        },
+        {
+          "id": "eval-injection",
+          "title": "Unsafe eval / template injection",
+          "priority": "High",
+          "entry_points": ["template rendering, dynamic evaluation endpoints"],
+          "test_steps": [
+            "Search for user inputs passed to eval-like functions or templating engines.",
+            "Test with benign payloads that reveal template evaluation (e.g., `{{7*7}}`)."
+          ],
+          "payloads": ["{{7*7}}", "${7*7}"],
+          "vulnerable_signs": ["evaluated expressions in response", "stack traces showing templating internals"],
+          "impact": "RCE or sensitive data exposure.",
+          "remediation": ["Avoid client-controlled expressions; sandbox or use safe templating."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "crypto-secrets",
+      "title": "Insecure Cryptography & Secrets Management",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "weak-crypto",
+          "title": "Weak or custom cryptographic use",
+          "priority": "Medium",
+          "entry_points": ["encryption routines, password storage"],
+          "test_steps": [
+            "Inspect password storage (bcrypt/scrypt/argon2 presence).",
+            "Check for custom crypto or weak algorithms (MD5, SHA1) in use."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["MD5/SHA1 usage, unhashed secrets"],
+          "impact": "Credential compromise and tampering.",
+          "remediation": ["Use proven algorithms (argon2/bcrypt) and secure key storage."],
+          "owasp": ["A02:2021 — Cryptographic Failures"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "secret-in-repo",
+          "title": "Secrets in code or repo",
+          "priority": "High",
+          "entry_points": ["public repos, config files"],
+          "test_steps": [
+            "Search for `API_KEY`, `SECRET`, tokens in public code.",
+            "Check CI logs for accidental leakages."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["active-looking keys in repo or logs"],
+          "impact": "Service compromise.",
+          "remediation": ["Use vaults/secret managers; rotate keys."],
+          "owasp": ["A02:2021"],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "rate-throttle",
+      "title": "Rate Limiting, Throttling & Abuse",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "rate-limit-missing",
+          "title": "Missing rate limits on sensitive endpoints",
+          "priority": "High",
+          "entry_points": ["/login", "/api endpoints"],
+          "test_steps": [
+            "Perform low-impact burst requests to observe throttle behavior.",
+            "Test incremental rate increases to find thresholds."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["no 429 responses, unlimited attempts"],
+          "impact": "Brute force, scraping, DoS.",
+          "remediation": ["Implement per-IP and per-user rate limits; CAPTCHA for risky flows."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "security-headers",
+      "title": "Security Headers, CORS & TLS",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "missing-headers",
+          "title": "Missing security headers (CSP, HSTS, X-Frame-Options)",
+          "priority": "Medium",
+          "entry_points": ["All HTTP responses"],
+          "test_steps": [
+            "Inspect response headers for CSP, HSTS, X-Frame-Options, X-Content-Type-Options.",
+            "Test clickjacking by framing the site (if X-Frame-Options missing)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["lacking security headers"],
+          "impact": "XSS impact increases; clickjacking; MIME sniffing.",
+          "remediation": ["Add secure headers with appropriate directives."],
+          "owasp": ["A05:2021"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "cors-misconfig",
+          "title": "CORS misconfiguration",
+          "priority": "Medium",
+          "entry_points": ["API endpoints", "AJAX resources"],
+          "test_steps": [
+            "Check `Access-Control-Allow-Origin` and credential settings.",
+            "Test requests from attacker origins to observe if credentials are allowed."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["wildcard origin with credentials allowed"],
+          "impact": "Cross-origin data extraction.",
+          "remediation": ["Specify allowed origins; do not allow credentials with `*`."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "tls-config",
+          "title": "Weak TLS config / outdated ciphers",
+          "priority": "Medium",
+          "entry_points": ["HTTPS endpoint"],
+          "test_steps": [
+            "Run `ssllabs` or `testssl.sh` to evaluate TLS configuration and protocols.",
+            "Check for TLS 1.0/1.1 and weak ciphers."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["weak cipher suites, missing HSTS"],
+          "impact": "Man-in-the-middle attacks.",
+          "remediation": ["Enable modern TLS 1.2/1.3 and disable weak ciphers."],
+          "owasp": ["A05:2021"],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "third-party",
+      "title": "Third-party Components & Supply Chain",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "outdated-libs",
+          "title": "Outdated dependencies & vulnerable components",
+          "priority": "Medium",
+          "entry_points": ["package manifests (package.json, requirements.txt)"],
+          "test_steps": [
+            "Check dependency versions vs. known CVEs (SCA tools or OSV).",
+            "Inspect for direct inclusion of vulnerable JS libs in page source."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["known CVE versions found"],
+          "impact": "Remote compromise via vulnerable libs.",
+          "remediation": ["Update dependencies and use SCA checks in CI."],
+          "owasp": ["A06:2021"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "cdn-script",
+          "title": "Third-party script / supply chain risk",
+          "priority": "Medium",
+          "entry_points": ["externally loaded JS/CSS"],
+          "test_steps": [
+            "List external scripts and services; check integrity attributes (SRI).",
+            "Consider replacing risky third-party widgets with safer alternatives."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["no SRI, many 3rd-party scripts"],
+          "impact": "Site compromise if third-party is compromised.",
+          "remediation": ["Use SRI, limit external scripts, monitor third-party changes."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "api-mobile",
+      "title": "API & Mobile-specific Checks",
+      "priority": "High",
+      "items": [
+        {
+          "id": "excessive-data",
+          "title": "Excessive data exposure in APIs",
+          "priority": "High",
+          "entry_points": ["/api/*", "mobile client endpoints"],
+          "test_steps": [
+            "Call API endpoints with different user tokens and compare responses.",
+            "Look for fields not required by the client (PII, internal flags)."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["extra sensitive fields returned"],
+          "impact": "Data breach or privacy violations.",
+          "remediation": ["Implement response filtering by role and minimum data principle."],
+          "owasp": ["A01:2021"],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "jwt-misuse",
+          "title": "JWT issues (none, weak signing, alg=none)",
+          "priority": "High",
+          "entry_points": ["Authorization header", "cookies with JWTs"],
+          "test_steps": [
+            "Inspect JWT header/claims; test `alg` tampering (non-destructive).",
+            "Check for missing signature validation by server."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["server accepts unsigned or modified token"],
+          "impact": "Token forgery, privilege escalation.",
+          "remediation": ["Reject `alg=none`, validate signatures using secure keys."],
+          "owasp": [],
+          "cwe": ["CWE-347"],
+          "references": []
+        },
+        {
+          "id": "mobile-insecure-storage",
+          "title": "Insecure storage or secrets in mobile apps",
+          "priority": "Medium",
+          "entry_points": ["apk/ipa analysis, local storage endpoints"],
+          "test_steps": [
+            "Static analysis of app bundle for embedded secrets.",
+            "Check insecure storage of tokens or keys in local storage."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["keys embedded in binary or config"],
+          "impact": "Compromise of API access.",
+          "remediation": ["Use platform keystore, avoid hard-coded secrets."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "logging-monitoring",
+      "title": "Logging, Monitoring & Error Handling",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "detailed-errors",
+          "title": "Verbose error messages leaking info",
+          "priority": "Medium",
+          "entry_points": ["error pages, stack traces"],
+          "test_steps": [
+            "Trigger errors (non-destructive) and inspect response for stack traces and config paths.",
+            "Search for database errors revealing queries or credentials."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["stack traces, internal IPs, DB errors"],
+          "impact": "Recon for further attacks.",
+          "remediation": ["Show generic errors to users; log details securely."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "missing-logs",
+          "title": "Insufficient logging & monitoring",
+          "priority": "Medium",
+          "entry_points": ["critical endpoints", "auth events"],
+          "test_steps": [
+            "Check whether login failures, admin actions, and key events are logged.",
+            "Attempt actions and request logs (if possible via support) to confirm."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["no audit trail for critical actions"],
+          "impact": "Delayed detection of breaches.",
+          "remediation": ["Log critical events, implement alerting and retention policies."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "deployment",
+      "title": "Deployment & Configuration",
+      "priority": "Medium",
+      "items": [
+        {
+          "id": "exposed-admin",
+          "title": "Exposed admin panels and debug pages",
+          "priority": "High",
+          "entry_points": ["/admin", "/debug", "/phpmyadmin"],
+          "test_steps": [
+            "Enumerate common admin endpoints and test accessibility.",
+            "Check for staging or debug pages accessible in production."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["admin interface reachable without auth"],
+          "impact": "Full control over application.",
+          "remediation": ["Restrict admin panels by IP/ACL and remove debug pages."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "default-creds",
+          "title": "Default credentials on management interfaces",
+          "priority": "High",
+          "entry_points": ["router, admin UI, DB admin panels"],
+          "test_steps": [
+            "Test vendor default logins on discovered admin panels.",
+            "Check for unchanged default credentials in appliances and dashboards."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["login with default user/pass"],
+          "impact": "Immediate compromise.",
+          "remediation": ["Change defaults and enforce credential policies."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "low-hanging",
+      "title": "Common Low-hanging Issues",
+      "priority": "Low",
+      "items": [
+        {
+          "id": "open-directories",
+          "title": "Open directory listing",
+          "priority": "Low",
+          "entry_points": ["/uploads/", "/static/"],
+          "test_steps": [
+            "Request directory URL and observe for file listing.",
+            "Scan for default index misconfiguration."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["index of /uploads shown"],
+          "impact": "Information disclosure.",
+          "remediation": ["Disable directory listing; block access to sensitive folders."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "http-only",
+          "title": "Site accessible over HTTP (not HTTPS)",
+          "priority": "Medium",
+          "entry_points": ["http:// domain"],
+          "test_steps": [
+            "Check if site responds on HTTP and whether it redirects to HTTPS.",
+            "Check HSTS header presence."
+          ],
+          "payloads": [],
+          "vulnerable_signs": ["plain HTTP access without redirect"],
+          "impact": "MiTM; cookie theft.",
+          "remediation": ["Redirect HTTP to HTTPS and enable HSTS."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    },
+    {
+      "id": "reporting",
+      "title": "Reporting & Evidence Collection",
+      "priority": "High",
+      "items": [
+        {
+          "id": "evidence",
+          "title": "Evidence capture checklist",
+          "priority": "High",
+          "entry_points": ["screenshots, request logs, burp items"],
+          "test_steps": [
+            "Capture HTTP requests/responses (Burp, browser devtools).",
+            "Record steps with timestamps, affected endpoints, and PoC payloads.",
+            "Ensure PoC is non-destructive and reversible."
+          ],
+          "payloads": [],
+          "vulnerable_signs": [],
+          "impact": "High-quality reports increase triage speed.",
+          "remediation": ["Follow vendor disclosure policies; include replayable steps."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        },
+        {
+          "id": "impact-assessment",
+          "title": "Assessing impact & severity",
+          "priority": "High",
+          "entry_points": ["vulnerability findings"],
+          "test_steps": [
+            "Document data types exposed, affected user counts, and exploitability.",
+            "Classify severity (Critical/High/Medium/Low) and map to CVSS if possible."
+          ],
+          "payloads": [],
+          "vulnerable_signs": [],
+          "impact": "Clear prioritization for remediation.",
+          "remediation": ["Provide remediation steps and suggested fixes in reports."],
+          "owasp": [],
+          "cwe": [],
+          "references": []
+        }
+      ]
+    }
+  ]
+};
 
-        // --- Global Firebase & App Variables (MANDATORY USE) ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// --- CONSTANTS & HELPERS ---
 
-        let app, db, auth, userId = null;
-        let isAuthReady = false;
+const priorityMap = {
+  High: 'bg-red-500 text-red-100',
+  Medium: 'bg-yellow-500 text-yellow-100',
+  Low: 'bg-blue-500 text-blue-100',
+};
+
+const allPriorities = ['High', 'Medium', 'Low'];
+const allCategories = checklistData.categories.map(cat => ({ id: cat.id, title: cat.title }));
+const totalItems = checklistData.categories.reduce((acc, cat) => acc + cat.items.length, 0);
+
+/**
+ * Custom hook to persist state in localStorage
+ * @param {string} key - The key to use in localStorage
+ * @param {*} defaultValue - The initial value if nothing is in localStorage
+ */
+function usePersistentState(key, defaultValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const storedValue = localStorage.getItem(key);
+      return storedValue ? JSON.parse(storedValue) : defaultValue;
+    } catch (error) {
+      console.error(`Error reading from localStorage key “${key}”:`, error);
+      return defaultValue;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch (error) {
+      console.error(`Error writing to localStorage key “${key}”:`, error);
+    }
+  }, [key, state]);
+
+  return [state, setState];
+}
+
+/**
+ * Utility to download a file
+ * @param {string} filename - The name of the file to download
+ * @param {string} text - The content of the file
+ * @param {string} type - The MIME type (e.g., 'application/json', 'text/markdown')
+ */
+function downloadFile(filename, text, type) {
+  const element = document.createElement('a');
+  const file = new Blob([text], { type });
+  element.href = URL.createObjectURL(file);
+  element.download = filename;
+  document.body.appendChild(element); // Required for this to work in FireFox
+  element.click();
+  document.body.removeChild(element);
+}
+
+// --- COMPONENTS ---
+
+/**
+ * Reusable Code Block with Copy Button
+ */
+const CodeBlock = ({ content }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    // Use the document.execCommand fallback for iframe compatibility
+    const textArea = document.createElement('textarea');
+    textArea.value = content;
+    textArea.style.position = 'fixed'; // Avoid scrolling to bottom
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+    document.body.removeChild(textArea);
+  };
+
+  return (
+    <pre className="relative rounded-lg bg-gray-800 p-4 font-mono text-sm text-gray-200 overflow-x-auto">
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 rounded-md p-1.5 text-gray-400 hover:bg-gray-700 hover:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        aria-label={copied ? 'Copied' : 'Copy code'}
+      >
+        {copied ? <Check size={16} /> : <Copy size={16} />}
+      </button>
+      <code>{content}</code>
+    </pre>
+  );
+};
+
+/**
+ * Reusable section for displaying item details
+ */
+const DetailSection = ({ title, children, visible = true }) => {
+  if (!visible) return null;
+  return (
+    <section className="mt-4">
+      <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-400">{title}</h4>
+      <div className="prose prose-sm prose-invert mt-2 max-w-none prose-ul:list-disc prose-ul:pl-5 prose-li:my-1">
+        {children}
+      </div>
+    </section>
+  );
+};
+
+/**
+ * Priority Badge
+ */
+const PriorityBadge = ({ priority }) => {
+  const colorClass = priorityMap[priority] || 'bg-gray-500 text-gray-100';
+  return (
+    <span
+      className={`ml-2 inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ${colorClass}`}
+    >
+      {priority}
+    </span>
+  );
+};
+
+/**
+ * Component for user notes
+ */
+const NoteEditor = ({ note, onChange }) => {
+  const [localNote, setLocalNote] = useState(note);
+  const saveTimeout = useRef(null);
+
+  const handleChange = (e) => {
+    setLocalNote(e.target.value);
+    // Debounce the save operation
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current);
+    }
+    saveTimeout.current = setTimeout(() => {
+      onChange(e.target.value);
+    }, 500); // Save 500ms after user stops typing
+  };
+
+  // Ensure local state updates if prop changes (e.g., on import)
+  useEffect(() => {
+    setLocalNote(note);
+  }, [note]);
+
+  return (
+    <section className="mt-4">
+      <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Notes</h4>
+      <textarea
+        value={localNote}
+        onChange={handleChange}
+        placeholder="Add your notes here..."
+        className="mt-2 w-full rounded-lg border-2 border-gray-600 bg-gray-800 p-3 text-sm text-gray-100 shadow-inner focus:border-indigo-500 focus:outline-none focus:ring-indigo-500"
+        rows={4}
+      />
+    </section>
+  );
+};
+
+/**
+ * Detailed view for a checklist item
+ */
+const ItemDetails = ({ item }) => {
+  return (
+    <div className="py-4 px-4 md:px-6">
+      <DetailSection title="Description" visible={item.description}>
+        <p>{item.description}</p>
+      </DetailSection>
+
+      <DetailSection title="Entry Points" visible={item.entry_points?.length > 0}>
+        <ul className="flex flex-wrap gap-1">
+          {item.entry_points.map((point, i) => (
+            <li key={i} className="m-0 inline-block rounded-md bg-gray-700 px-2 py-0.5 text-xs text-gray-200">
+              <code>{point}</code>
+            </li>
+          ))}
+        </ul>
+      </DetailSection>
+
+      <DetailSection title="Test Steps" visible={item.test_steps?.length > 0}>
+        <ol className="list-decimal pl-5">
+          {item.test_steps.map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ol>
+      </DetailSection>
+
+      <DetailSection title="Payloads" visible={item.payloads?.length > 0}>
+        <div className="space-y-2">
+          {item.payloads.map((payload, i) => (
+            <CodeBlock key={i} content={payload} />
+          ))}
+        </div>
+      </DetailSection>
+
+      <DetailSection title="Vulnerable Signs" visible={item.vulnerable_signs?.length > 0}>
+        <ul>
+          {item.vulnerable_signs.map((sign, i) => (
+            <li key={i}>{sign}</li>
+          ))}
+        </ul>
+      </DetailSection>
+
+      <DetailSection title="Impact" visible={item.impact}>
+        <p>{item.impact}</p>
+      </DetailSection>
+
+      <DetailSection title="Remediation" visible={item.remediation?.length > 0}>
+        <ul>
+          {item.remediation.map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ul>
+      </DetailSection>
+
+      <DetailSection title="References" visible={item.references?.length > 0}>
+        <ul>
+          {item.references.map((ref, i) => (
+            <li key={i}>
+              <a
+                href={ref.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-indigo-400 hover:text-indigo-300 hover:underline"
+              >
+                {ref.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </DetailSection>
+    </div>
+  );
+};
+
+/**
+ * A single checklist item
+ */
+const ChecklistItem = ({ item, isChecked, isExpanded, onToggleChecked, onToggleExpand, note, onNoteChange }) => {
+  const itemControlId = `item-content-${item.id}`;
+  const itemLabelId = `item-label-${item.id}`;
+
+  return (
+    <li className="rounded-lg bg-gray-800 shadow-md transition-all duration-200 ease-in-out hover:bg-gray-750">
+      <div className="flex items-center p-3">
+        <input
+          type="checkbox"
+          id={itemLabelId}
+          checked={isChecked}
+          onChange={() => onToggleChecked(item.id)}
+          className="h-5 w-5 flex-shrink-0 rounded border-gray-500 bg-gray-700 text-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+        />
+        <label htmlFor={itemLabelId} className="ml-3 flex-1 cursor-pointer truncate pr-2">
+          <span className="font-medium text-gray-100">{item.title}</span>
+        </label>
+        <PriorityBadge priority={item.priority} />
+        <button
+          onClick={() => onToggleExpand(item.id)}
+          className="ml-2 rounded-md p-1.5 text-gray-400 hover:bg-gray-700 hover:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          aria-expanded={isExpanded}
+          aria-controls={itemControlId}
+          aria-label={isExpanded ? `Collapse ${item.title}` : `Expand ${item.title}`}
+        >
+          {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+        </button>
+      </div>
+      {isExpanded && (
+        <div id={itemControlId} className="border-t border-gray-700 bg-gray-850">
+          <ItemDetails item={item} />
+          <div className="border-t border-gray-700 px-4 pt-4 pb-6 md:px-6">
+            <NoteEditor note={note} onChange={(newNote) => onNoteChange(item.id, newNote)} />
+          </div>
+        </div>
+      )}
+    </li>
+  );
+};
+
+/**
+ * A category of checklist items
+ */
+const Category = ({
+  category,
+  checkedItems,
+  expandedItems,
+  onToggleChecked,
+  onToggleExpand,
+  notes,
+  onNoteChange
+}) => {
+  // We manage category expansion state in the App component, so we pass it down
+  // For this example, let's manage it locally to keep App state cleaner.
+  // No, the request implies search/filter might auto-expand. Let's manage in App.
+  // Re-correction: The prompt doesn't explicitly state that. Local state is simpler.
+  // Let's stick with the original plan: state in App for full control.
+  
+  // OK, final decision: to simplify, we'll pass *all* expansion state from App.
+  const { isExpanded, onToggleCategoryExpand, allItems, items } = category;
+  
+  const categoryControlId = `category-content-${category.id}`;
+  const categoryLabelId = `category-label-${category.id}`;
+
+  // Determine if all items in this category (that are visible) are checked
+  const allVisibleItems = category.items;
+  const allVisibleItemIds = allVisibleItems.map(i => i.id);
+  const checkedVisibleItemIds = allVisibleItemIds.filter(id => checkedItems[id]);
+  const isAllChecked = allVisibleItemIds.length > 0 && checkedVisibleItemIds.length === allVisibleItemIds.length;
+  const isIndeterminate = checkedVisibleItemIds.length > 0 && checkedVisibleItemIds.length < allVisibleItemIds.length;
+
+  const handleCategoryCheck = () => {
+    const allItemIds = category.items.map(i => i.id);
+    const shouldCheck = !isAllChecked;
+    onToggleChecked(allItemIds, shouldCheck);
+  };
+  
+  return (
+    <section className="mb-6 rounded-xl bg-gray-800 shadow-lg" aria-labelledby={categoryLabelId}>
+      <header
+        className="flex cursor-pointer items-center rounded-t-xl border-b border-gray-700 bg-gray-700 p-4"
         
-        // --- Core Checklist Data ---
-        const VULNERABILITY_CHECKLIST = [
-            {
-                category: "1. Broken Access Control (A01:2021)",
-                icon: "🔒",
-                items: [
-                    { id: "A1_01", text: "IDOR (Insecure Direct Object Reference) - Check if object IDs (URL/body/param) can be swapped for unauthorized data." },
-                    { id: "A1_02", text: "BOLA (Broken Object Level Authorization) - Test API endpoints for access control issues using different user tokens." },
-                    { id: "A1_03", text: "BFLA (Broken Function Level Authorization) - Try accessing administrative or restricted functions without proper roles." },
-                    { id: "A1_04", text: "Path Traversal - Attempt to access files outside the intended directory (e.g., `/etc/passwd`) via input parameters." },
-                    { id: "A1_05", text: "HTTP Method Tampering - Change POST requests to GET (or vice-versa) to bypass security checks." },
-                    { id: "A1_06", text: "Mass Assignment - Try adding unauthorized fields (e.g., `isAdmin: true`) to request bodies." }
-                ]
-            },
-            {
-                category: "2. Injection Flaws (A03:2021)",
-                icon: "💉",
-                items: [
-                    { id: "I2_01", text: "SQL Injection (SQLi) - Test all database inputs for classic and blind SQLi payloads." },
-                    { id: "I2_02", text: "Stored/Persistent XSS - Inject payloads into forums, profiles, or comments to affect other users." },
-                    { id: "I2_03", text: "Reflected XSS - Inject payloads into URLs/forms that are immediately echoed back in the response." },
-                    { id: "I2_04", text: "DOM-based XSS - Analyze client-side JavaScript for unsafe use of user data (e.g., `innerHTML`, `document.write`)." },
-                    { id: "I2_05", text: "Command Injection - Test inputs that might be passed to operating system functions (e.g., `system()`, `exec()`)." },
-                    { id: "I2_06", text: "NoSQL Injection - Test parameter inputs for injection against NoSQL databases like MongoDB or Redis." }
-                ]
-            },
-            {
-                category: "3. Authentication & Session Failures (A07:2021)",
-                icon: "🔑",
-                items: [
-                    { id: "S3_01", text: "Brute Force Protection - Check if rate limits are applied to login, password reset, and MFA endpoints." },
-                    { id: "S3_02", text: "Weak Password Policy - Test if common/short passwords are allowed." },
-                    { id: "S3_03", text: "Session Token Security - Verify `Secure`, `HttpOnly`, and `SameSite` flags are set on session cookies." },
-                    { id: "S3_04", text: "Logout/Session Invalidation - Check if the session token is properly invalidated upon logout/password change." },
-                    { id: "S3_05", text: "Password Reset Logic Flaws - Test for token reuse, token leakage, or user enumeration during the reset flow." },
-                    { id: "S3_06", text: "MFA Bypass - Check if MFA can be bypassed by request manipulation (e.g., dropping the MFA parameter)." }
-                ]
-            },
-            {
-                category: "4. Security Misconfiguration (A05:2021)",
-                icon: "⚙️",
-                items: [
-                    { id: "M4_01", text: "Exposed Admin Interfaces - Look for common admin URLs (e.g., `/admin`, `/dashboard`, `/manager`)." },
-                    { id: "M4_02", text: "Default or Guessable Credentials - Test for default vendor accounts (e.g., admin:admin, tomcat:tomcat)." },
-                    { id: "M4_03", text: "Verbose Error Messages - Check if error pages leak internal server paths, stack traces, or database schema info." },
-                    { id: "M4_04", text: "Missing/Weak Security Headers - Check for missing `Content-Security-Policy`, `X-Frame-Options`, `HSTS`." },
-                    { id: "M4_05", text: "Misconfigured CORS - Test for overly permissive CORS policies (e.g., `Access-Control-Allow-Origin: *`)." },
-                    { id: "M4_06", text: "Unsecured Files/Directories - Check for exposed `.git` folders, backup files (`.bak`, `.zip`), or directory listings." }
-                ]
-            },
-            {
-                category: "5. Server-Side Request Forgery (SSRF) & Redirects (A10:2021)",
-                icon: "➡️",
-                items: [
-                    { id: "R5_01", text: "SSRF on URL parameters - Test inputs that fetch remote content (e.g., image import, webhook URL) for access to internal IPs." },
-                    { id: "R5_02", text: "SSRF via hidden inputs - Check server-side functionality that uses user-provided data as a source/target." },
-                    { id: "R5_03", text: "Open Redirect - Test if the application redirects to an arbitrary external URL via a parameter (e.g., `?next=`)." },
-                    { id: "R5_04", text: "Host Header Injection - Test for manipulating the Host header to exploit cache poisoning or password reset flaws." }
-                ]
-            },
-            {
-                category: "6. Business Logic Flaws",
-                icon: "🧠",
-                items: [
-                    { id: "B6_01", text: "Price/Quantity Manipulation - Test for changing prices, discounts, or quantities in e-commerce applications." },
-                    { id: "B6_02", text: "Race Conditions - Submit simultaneous requests (e.g., double spend, double-click on checkout) to bypass limits." },
-                    { id: "B6_03", text: "Account Enumeration - Check if the system leaks valid account existence during login/password reset attempts." },
-                    { id: "B6_04", text: "Workflow Bypass - Skip mandatory steps in a complex flow (e.g., bypass payment step in checkout)." }
-                ]
-            },
-            {
-                category: "7. Data and File Management",
-                icon: "📁",
-                items: [
-                    { id: "D7_01", text: "Unrestricted File Upload - Upload a webshell or malicious file type (e.g., `.php`, `.jsp`) and try to execute it." },
-                    { id: "D7_02", text: "Insecure Deserialization - Test inputs that might deserialize untrusted data (e.g., Java objects, PHP sessions)." },
-                    { id: "D7_03", text: "Metadata Exposure - Check file uploads (images/documents) for sensitive EXIF or metadata." },
-                    { id: "D7_04", text: "XML External Entity (XXE) - Test XML parsing functions for ability to read local files or perform SSRF." }
-                ]
-            }
-        ];
+      >
+        <input
+          type="checkbox"
+          id={categoryLabelId}
+          checked={isAllChecked}
+          ref={el => el && (el.indeterminate = isIndeterminate)}
+          onChange={handleCategoryCheck}
+          className="h-5 w-5 flex-shrink-0 rounded border-gray-500 bg-gray-600 text-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-700"
+          aria-label={`Check all items in ${category.title}`}
+        />
+        <button
+          onClick={() => onToggleCategoryExpand(category.id)}
+          className="ml-3 flex flex-1 items-center text-left focus:outline-none"
+          aria-expanded={isExpanded}
+          aria-controls={categoryControlId}
+        >
+          {isExpanded ? <ChevronDown size={20} className="mr-2 flex-shrink-0" /> : <ChevronRight size={20} className="mr-2 flex-shrink-0" />}
+          <h2 id={categoryLabelId} className="flex-1 text-lg font-semibold text-gray-100">
+            {category.title}
+          </h2>
+        </button>
+        <span className="ml-2 text-sm font-medium text-gray-300">
+          {checkedVisibleItemIds.length} / {allVisibleItemIds.length}
+        </span>
+      </header>
+      {isExpanded && (
+        <ul id={categoryControlId} className="space-y-3 p-4">
+          {category.items.map(item => (
+            <ChecklistItem
+              key={item.id}
+              item={item}
+              isChecked={!!checkedItems[item.id]}
+              isExpanded={!!expandedItems[item.id]}
+              onToggleChecked={onToggleChecked}
+              onToggleExpand={onToggleExpand}
+              note={notes[item.id] || ''}
+              onNoteChange={onNoteChange}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+};
 
-        // --- Application State ---
-        let checkedState = {}; // Stores { "A1_01": true, ... }
-        let checklistHtmlContainer;
-        let authSpinner;
-        let userIdDisplay;
+/**
+ * Main checklist rendering area
+ */
+const Checklist = ({
+  filteredData,
+  checkedItems,
+  expandedCategories,
+  expandedItems,
+  onToggleCategoryExpand,
+  onToggleItemExpand,
+  onToggleChecked,
+  notes,
+  onNoteChange
+}) => {
+  
+  const handleToggleChecked = (idOrIds, forceState) => {
+    onToggleChecked(idOrIds, forceState);
+  };
 
-        // --- Firebase Firestore Functions ---
+  if (filteredData.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-center text-gray-500">
+        <Filter size={48} className="mb-4" />
+        <h3 className="text-xl font-semibold">No Results Found</h3>
+        <p className="mt-1">Try adjusting your search or filter criteria.</p>
+      </div>
+    );
+  }
 
-        const checklistPath = (uid) => `artifacts/${appId}/users/${uid}/bug_bounty_checklist`;
-        const checklistDocumentRef = (uid) => doc(db, checklistPath(uid), 'state');
+  return (
+    <div className="p-4 md:p-8">
+      {filteredData.map(category => (
+        <Category
+          key={category.id}
+          category={{
+            ...category,
+            isExpanded: !!expandedCategories[category.id],
+            onToggleCategoryExpand: onToggleCategoryExpand,
+          }}
+          checkedItems={checkedItems}
+          expandedItems={expandedItems}
+          onToggleChecked={handleToggleChecked}
+          onToggleExpand={onToggleItemExpand}
+          notes={notes}
+          onNoteChange={onNoteChange}
+        />
+      ))}
+    </div>
+  );
+};
 
-        /**
-         * Saves the current checklist state to Firestore.
-         */
-        const saveChecklistState = async () => {
-            if (!userId || !db) {
-                console.error("Firestore not initialized or user not logged in.");
-                return;
-            }
-            try {
-                await setDoc(checklistDocumentRef(userId), { checked: checkedState }, { merge: true });
-                console.log("Checklist state saved successfully.");
-            } catch (error) {
-                console.error("Error saving checklist state:", error);
-            }
-        };
+/**
+ * Stats component for the sidebar
+ */
+const Stats = ({ checkedCount, totalCount }) => {
+  const percentage = totalCount > 0 ? Math.round((checkedCount / totalCount) * 100) : 0;
+  return (
+    <div className="px-4">
+      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-400">Progress</h3>
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-gray-200">Completed</span>
+        <span className="font-medium text-gray-100">{checkedCount} / {totalCount}</span>
+      </div>
+      <div className="mt-2 w-full rounded-full bg-gray-700">
+        <div
+          className="rounded-full bg-indigo-600 p-0.5 text-center text-xs font-medium leading-none text-indigo-100 transition-all duration-500"
+          style={{ width: `${percentage}%` }}
+        >
+          {percentage}%
+        </div>
+      </div>
+    </div>
+  );
+};
 
-        /**
-         * Loads the checklist state from Firestore using onSnapshot for real-time updates.
-         */
-        const loadChecklistState = () => {
-            if (!userId || !db) {
-                console.error("Cannot load state: user not logged in or db not initialized.");
-                return;
-            }
+/**
+ * Reusable filter control component
+ */
+const FilterControl = ({ title, options, selected, onToggle }) => {
+  return (
+    <fieldset className="px-4">
+      <legend className="mb-2 text-sm font-semibold uppercase tracking-wide text-gray-400">{title}</legend>
+      <div className="flex flex-wrap gap-2">
+        {options.map(option => {
+          const isSelected = selected.has(option.id || option);
+          return (
+            <button
+              key={option.id || option}
+              onClick={() => onToggle(option.id || option)}
+              role="switch"
+              aria-checked={isSelected}
+              className={`rounded-full py-1 px-3 text-sm font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900 ${
+                isSelected
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+              }`}
+            >
+              {option.title || option}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+};
 
-            const unsubscribe = onSnapshot(checklistDocumentRef(userId), (docSnapshot) => {
-                if (docSnapshot.exists()) {
-                    const data = docSnapshot.data();
-                    checkedState = data.checked || {};
-                    console.log("Checklist state loaded:", checkedState);
-                    renderChecklist(); // Re-render the UI with the loaded state
-                } else {
-                    console.log("No checklist state found, starting fresh.");
-                    checkedState = {};
-                    renderChecklist();
-                }
-            }, (error) => {
-                console.error("Error listening to checklist state:", error);
+/**
+ * Import/Export component
+ */
+const ImportExport = ({ onImport, onExportProgress, onExportMarkdown }) => {
+  const fileInputRef = useRef(null);
+
+  const handleImportClick = () => {
+    fileInputRef.current.click();
+  };
+
+  return (
+    <div className="space-y-3 px-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Data</h3>
+      <input
+        type="file"
+        ref={fileInputRef}
+        className="hidden"
+        accept="application/json"
+        onChange={onImport}
+      />
+      <button
+        onClick={handleImportClick}
+        className="flex w-full items-center justify-center rounded-lg bg-gray-700 py-2 px-3 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+      >
+        <Upload size={16} className="mr-2" />
+        Import Progress (.json)
+      </button>
+      <button
+        onClick={onExportProgress}
+        className="flex w-full items-center justify-center rounded-lg bg-gray-700 py-2 px-3 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+      >
+        <Download size={16} className="mr-2" />
+        Export Progress (.json)
+      </button>
+      <button
+        onClick={onExportMarkdown}
+        className="flex w-full items-center justify-center rounded-lg bg-gray-700 py-2 px-3 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+      >
+        <FileText size={16} className="mr-2" />
+        Export Report (.md)
+      </button>
+    </div>
+  );
+};
+
+/**
+ * Sidebar component
+ */
+const Sidebar = ({
+  isOpen,
+  onClose,
+  checkedCount,
+  totalCount,
+  priorityFilter,
+  categoryFilter,
+  onTogglePriority,
+  onToggleCategory,
+  onImport,
+  onExportProgress,
+  onExportMarkdown
+}) => {
+  return (
+    <>
+      {/* Mobile Overlay */}
+      <div
+        className={`fixed inset-0 z-30 bg-black/60 transition-opacity md:hidden ${
+          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={onClose}
+      />
+      {/* Sidebar */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-72 transform overflow-y-auto border-r border-gray-700 bg-gray-800 p-6 shadow-xl transition-transform duration-300 ease-in-out md:static md:z-auto md:w-80 md:translate-x-0 md:shadow-none ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold text-white">Bug Bounty Test</h1>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-400 hover:bg-gray-700 hover:text-gray-100 md:hidden"
+            aria-label="Close menu"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <p className="mt-1 text-sm text-gray-400">{checklistData.meta.title}</p>
+        
+        <nav className="mt-8 space-y-6">
+          <Stats checkedCount={checkedCount} totalCount={totalCount} />
+          
+          <FilterControl
+            title="Filter by Priority"
+            options={allPriorities}
+            selected={priorityFilter}
+            onToggle={onTogglePriority}
+          />
+          
+          <FilterControl
+            title="Filter by Category"
+            options={allCategories}
+            selected={categoryFilter}
+            onToggle={onToggleCategory}
+          />
+
+          <ImportExport
+            onImport={onImport}
+            onExportProgress={onExportProgress}
+            onExportMarkdown={onExportMarkdown}
+          />
+        </nav>
+      </aside>
+    </>
+  );
+};
+
+/**
+ * Main App Component
+ */
+export default function App() {
+  // State
+  const [checkedItems, setCheckedItems] = usePersistentState('bugBountyChecked', {});
+  const [notes, setNotes] = usePersistentState('bugBountyNotes', {});
+  const [expandedCategories, setExpandedCategories] = useState({});
+  const [expandedItems, setExpandedItems] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState(new Set());
+  const [categoryFilter, setCategoryFilter] = useState(new Set());
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [importError, setImportError] = useState(null);
+
+  // --- Event Handlers (useCallback for performance) ---
+
+  const toggleCategoryExpand = useCallback((categoryId) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [categoryId]: !prev[categoryId],
+    }));
+  }, []);
+
+  const toggleItemExpand = useCallback((itemId) => {
+    setExpandedItems(prev => ({
+      ...prev,
+      [itemId]: !prev[itemId],
+    }));
+  }, []);
+
+  const handleToggleChecked = useCallback((idOrIds, forceState) => {
+    setCheckedItems(prev => {
+      const newChecked = { ...prev };
+      if (Array.isArray(idOrIds)) {
+        // Handle category check/uncheck
+        const shouldCheck = forceState;
+        idOrIds.forEach(id => {
+          if (shouldCheck) {
+            newChecked[id] = true;
+          } else {
+            delete newChecked[id];
+          }
+        });
+      } else {
+        // Handle single item check
+        if (prev[idOrIds]) {
+          delete newChecked[idOrIds];
+        } else {
+          newChecked[idOrIds] = true;
+        }
+      }
+      return newChecked;
+    });
+  }, []);
+
+  const handleNoteChange = useCallback((itemId, newNote) => {
+    setNotes(prev => ({
+      ...prev,
+      [itemId]: newNote,
+    }));
+  }, []);
+
+  const handleSearchChange = (e) => {
+    setSearchTerm(e.target.value);
+  };
+
+  const toggleFilter = (setter, value) => {
+    setter(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(value)) {
+        newSet.delete(value);
+      } else {
+        newSet.add(value);
+      }
+      return newSet;
+    });
+  };
+
+  const togglePriority = useCallback((priority) => {
+    toggleFilter(setPriorityFilter, priority);
+  }, []);
+
+  const toggleCategory = useCallback((categoryId) => {
+    toggleFilter(setCategoryFilter, categoryId);
+  }, []);
+
+  // --- Import / Export Logic ---
+
+  const exportProgress = useCallback(() => {
+    const data = {
+      checked: checkedItems,
+      notes: notes,
+      version: checklistData.meta.version,
+      timestamp: new Date().toISOString(),
+    };
+    downloadFile('bug-bounty-progress.json', JSON.stringify(data, null, 2), 'application/json');
+  }, [checkedItems, notes]);
+
+  const importProgress = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (data.checked && typeof data.checked === 'object') {
+          setCheckedItems(data.checked);
+        } else {
+          throw new Error("Invalid or missing 'checked' data.");
+        }
+        if (data.notes && typeof data.notes === 'object') {
+          setNotes(data.notes);
+        } else {
+          // Allow missing notes
+          setNotes({});
+        }
+        setImportError(null);
+      } catch (err) {
+        console.error('Failed to import progress:', err);
+        setImportError(`Failed to read file: ${err.message}`);
+      }
+    };
+    reader.onerror = () => {
+      setImportError('Error reading file.');
+    };
+    reader.readAsText(file);
+    
+    // Reset file input to allow importing the same file again
+    e.target.value = null;
+  };
+
+  const exportMarkdown = useCallback(() => {
+    let md = `# Bug Bounty Report - ${new Date().toLocaleDateString()}\n\n`;
+    md += `Based on: ${checklistData.meta.title} (v${checklistData.meta.version})\n\n`;
+    
+    let completedCount = 0;
+    
+    checklistData.categories.forEach(category => {
+      const completedItems = category.items.filter(item => checkedItems[item.id]);
+      if (completedItems.length > 0) {
+        md += `## ${category.title}\n\n`;
+        completedItems.forEach(item => {
+          completedCount++;
+          md += `### [COMPLETED] ${item.title}\n\n`;
+          md += `**Priority:** ${item.priority}\n`;
+          md += `**Impact:** ${item.impact}\n\n`;
+          
+          const note = notes[item.id];
+          if (note) {
+            md += `**My Notes:**\n`;
+            md += `\`\`\`\n${note}\n\`\`\`\n\n`;
+          }
+          
+          md += `**Remediation:**\n`;
+          if (item.remediation && item.remediation.length > 0) {
+            item.remediation.forEach(step => {
+              md += `- ${step}\n`;
             });
+          } else {
+            md += `*No remediation steps provided.*\n`;
+          }
+          md += `\n---\n\n`;
+        });
+      }
+    });
+    
+    if (completedCount === 0) {
+      md += `*No items marked as completed.*`;
+    }
+    
+    downloadFile('bug-bounty-report.md', md, 'text/markdown');
 
-            // Note: In a larger app, you'd manage this unsubscribe function.
-            // For a single-file app like this, it's fine to just let it run.
-        };
+  }, [checkedItems, notes]);
 
-        // --- UI Rendering and Interaction ---
+  // --- Filtering Logic ---
+  
+  const filteredData = useMemo(() => {
+    const lowerSearch = searchTerm.toLowerCase();
 
-        const handleCheckChange = (event) => {
-            const itemId = event.target.value;
-            checkedState[itemId] = event.target.checked;
-            saveChecklistState(); // Save state immediately
-            // The renderChecklist call will happen via onSnapshot, ensuring data consistency.
-        };
+    return checklistData.categories
+      .map(category => {
+        // 1. Filter by Category Dropdown
+        if (categoryFilter.size > 0 && !categoryFilter.has(category.id)) {
+          return null;
+        }
 
-        const toggleCategory = (categoryId) => {
-            const content = document.getElementById(`content-${categoryId}`);
-            const chevron = document.getElementById(`chevron-${categoryId}`);
-            if (content.classList.contains('hidden')) {
-                content.classList.remove('hidden');
-                chevron.classList.add('rotate-90');
-            } else {
-                content.classList.add('hidden');
-                chevron.classList.remove('rotate-90');
-            }
-        };
+        // 2. Filter Items by Priority and Search
+        const filteredItems = category.items.filter(item => {
+          // Priority filter
+          const priorityMatch = priorityFilter.size === 0 || priorityFilter.has(item.priority);
+          if (!priorityMatch) return false;
 
-        const renderChecklist = (searchTerm = '') => {
-            if (!checklistHtmlContainer) return;
+          // If no search term, item passes
+          if (lowerSearch === '') return true;
 
-            const lowerCaseSearchTerm = searchTerm.toLowerCase().trim();
-            let html = '';
+          // Search term filter (check item title, desc)
+          if (item.title.toLowerCase().includes(lowerSearch)) return true;
+          if (item.description && item.description.toLowerCase().includes(lowerSearch)) return true;
+          
+          return false;
+        });
 
-            VULNERABILITY_CHECKLIST.forEach((category, catIndex) => {
-                const categoryId = `cat-${catIndex}`;
-                let categoryMatches = false;
-                let itemHtml = '';
+        // 3. Check if Category itself matches search
+        const categoryMatchesSearch =
+          lowerSearch === '' ||
+          category.title.toLowerCase().includes(lowerSearch) ||
+          (category.description && category.description.toLowerCase().includes(lowerSearch));
 
-                category.items.forEach(item => {
-                    const itemText = item.text.toLowerCase();
-                    const isChecked = checkedState[item.id] || false;
-                    const isMatch = itemText.includes(lowerCaseSearchTerm);
+        // If category matches search, show all its items (that passed priority filter)
+        if (categoryMatchesSearch) {
+          const itemsForMatchedCat = category.items.filter(item => 
+            priorityFilter.size === 0 || priorityFilter.has(item.priority)
+          );
+          return { ...category, items: itemsForMatchedCat };
+        }
 
-                    if (lowerCaseSearchTerm === '' || isMatch) {
-                        categoryMatches = true;
-                        itemHtml += `
-                            <label for="${item.id}" class="flex items-start p-3 hover:bg-slate-50 transition duration-150 cursor-pointer border-b border-slate-100 last:border-b-0">
-                                <input type="checkbox" id="${item.id}" value="${item.id}" ${isChecked ? 'checked' : ''} class="mt-1 h-5 w-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 bg-white" onchange="window.handleCheckChange(event)">
-                                <span class="ml-3 text-sm flex-1 ${isChecked ? 'line-through text-slate-500' : 'text-slate-800'}">
-                                    <strong class="font-semibold text-slate-900">${item.id.split('_')[0]} | ${item.text.substring(0, item.text.indexOf(' - '))}</strong>
-                                    ${item.text.substring(item.text.indexOf(' - '))}
-                                </span>
-                                <span class="ml-auto text-xs font-medium px-2 py-1 rounded-full ${isChecked ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
-                                    ${isChecked ? 'Found / Mitigated' : 'Pending'}
-                                </span>
-                            </label>
-                        `;
-                    }
-                });
+        // If category doesn't match, but some of its items do, show category with just those items
+        if (filteredItems.length > 0) {
+          return { ...category, items: filteredItems };
+        }
 
-                // Only render the category if it matches the search or has matching items
-                if (lowerCaseSearchTerm === '' || categoryMatches) {
-                    html += `
-                        <div id="${categoryId}" class="mb-4 bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
-                            <button onclick="window.toggleCategory('${categoryId}')" class="w-full text-left flex items-center justify-between p-4 bg-slate-100 hover:bg-slate-200 transition duration-150">
-                                <h2 class="text-lg font-bold text-slate-800 flex items-center">
-                                    <span class="mr-3 text-2xl">${category.icon}</span>
-                                    ${category.category}
-                                </h2>
-                                <svg id="chevron-${categoryId}" class="w-5 h-5 text-slate-500 transition-transform duration-300 transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-                            </button>
-                            <div id="content-${categoryId}" class="transition-all duration-500 ${lowerCaseSearchTerm === '' ? '' : 'hidden'}">
-                                ${itemHtml}
-                            </div>
-                        </div>
-                    `;
-                }
-            });
+        // Otherwise, hide category
+        return null;
+      })
+      .filter(Boolean); // Remove null categories
+  }, [searchTerm, priorityFilter, categoryFilter]);
 
-            if (html === '') {
-                 html = `<p class="text-center p-8 text-slate-500 text-lg">No checklist items match your search term.</p>`;
-            }
+  // --- Calculations ---
 
-            checklistHtmlContainer.innerHTML = html;
-        };
+  const checkedCount = Object.keys(checkedItems).length;
 
-        const handleSearch = (event) => {
-            renderChecklist(event.target.value);
-        };
-
-        // Expose functions to the global scope for inline event handlers
-        window.handleCheckChange = handleCheckChange;
-        window.toggleCategory = toggleCategory;
-
-        // --- Initialization ---
-
-        const initFirebase = async () => {
-            if (!firebaseConfig) {
-                console.error("Firebase config is missing.");
-                // Render list without persistence if config is missing
-                isAuthReady = true;
-                userId = crypto.randomUUID(); // Use a dummy ID for rendering purposes
-                authSpinner.classList.add('hidden');
-                userIdDisplay.textContent = 'Demo Mode (No Persistence)';
-                userIdDisplay.classList.remove('bg-gray-200');
-                userIdDisplay.classList.add('bg-red-100', 'text-red-700');
-                renderChecklist();
-                return;
-            }
-
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-
-            try {
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Firebase authentication error:", error);
-                // Fallback to anonymous sign-in if custom token fails
-                try {
-                    await signInAnonymously(auth);
-                } catch (anonError) {
-                    console.error("Anonymous sign-in failed:", anonError);
-                }
-            }
-
-            onAuthStateChanged(auth, (user) => {
-                isAuthReady = true;
-                authSpinner.classList.add('hidden');
-                if (user) {
-                    userId = user.uid;
-                    userIdDisplay.textContent = `User ID: ${userId}`;
-                    userIdDisplay.classList.remove('bg-gray-200');
-                    userIdDisplay.classList.add('bg-indigo-100', 'text-indigo-700');
-                    loadChecklistState();
-                } else {
-                    userId = null;
-                    userIdDisplay.textContent = 'Signed out';
-                    userIdDisplay.classList.remove('bg-gray-200');
-                    userIdDisplay.classList.add('bg-red-100', 'text-red-700');
-                    renderChecklist(); // Render an empty checklist or placeholder
-                }
-            });
-        };
-
-        window.onload = () => {
-            checklistHtmlContainer = document.getElementById('checklist-container');
-            authSpinner = document.getElementById('auth-spinner');
-            userIdDisplay = document.getElementById('user-id-display');
-            document.getElementById('search-input').addEventListener('input', handleSearch);
-
-            // Initialize Firebase and load user data
-            initFirebase();
-        };
-
-    </script>
-</head>
-<body class="bg-gray-100 font-sans antialiased min-h-screen">
-    <div class="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
-        <!-- Header & Instructions -->
-        <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-indigo-700 tracking-tight mb-2">
-                Bug Bounty Hunter's Web Checklist
-            </h1>
-            <p class="text-lg text-slate-600">
-                Systematically hunt for vulnerabilities. Your progress is saved automatically via Firestore.
-            </p>
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-gray-900 font-sans text-gray-100">
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        checkedCount={checkedCount}
+        totalCount={totalItems}
+        priorityFilter={priorityFilter}
+        categoryFilter={categoryFilter}
+        onTogglePriority={togglePriority}
+        onToggleCategory={toggleCategory}
+        onImport={importProgress}
+        onExportProgress={exportProgress}
+        onExportMarkdown={exportMarkdown}
+      />
+      
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar */}
+        <header className="flex-shrink-0 border-b border-gray-700 bg-gray-800 px-4 py-3 shadow-sm">
+          <div className="flex items-center">
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="rounded-md p-1.5 text-gray-400 hover:bg-gray-700 hover:text-gray-100 md:hidden"
+              aria-label="Open menu"
+            >
+              <Menu size={20} />
+            </button>
+            <div className="relative w-full max-w-md ml-2 md:ml-0">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                <Search size={18} className="text-gray-400" />
+              </div>
+              <input
+                type="search"
+                placeholder="Search items..."
+                value={searchTerm}
+                onChange={handleSearchChange}
+                className="block w-full rounded-lg border-transparent bg-gray-700 py-2 pl-10 pr-3 text-sm text-gray-100 placeholder-gray-400 focus:border-indigo-500 focus:bg-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
         </header>
 
-        <!-- Search and Auth Status Bar -->
-        <div class="mb-8 p-4 bg-white rounded-xl shadow-md flex flex-col md:flex-row gap-4 items-center">
-            <input type="text" id="search-input" placeholder="Filter by vulnerability name or description..."
-                   class="flex-1 w-full md:w-auto p-3 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm transition"
-                   oninput="window.handleSearch(event)">
-            
-            <div id="auth-status" class="flex items-center space-x-2">
-                <div id="auth-spinner" class="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
-                <span id="user-id-display" class="px-3 py-1 text-xs font-semibold rounded-full bg-gray-200 text-gray-700 transition duration-300">
-                    Authenticating...
-                </span>
+        {/* Import Error Message */}
+        {importError && (
+          <div className="flex-shrink-0 bg-red-800 p-3 text-sm text-red-100">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <AlertTriangle size={18} className="mr-2" />
+                <span><strong>Import Failed:</strong> {importError}</span>
+              </div>
+              <button
+                onClick={() => setImportError(null)}
+                className="rounded-md p-1 -mr-1 text-red-200 hover:bg-red-700"
+                aria-label="Dismiss"
+              >
+                <X size={16} />
+              </button>
             </div>
-        </div>
+          </div>
+        )}
 
-        <!-- Checklist Container -->
-        <div id="checklist-container" class="space-y-4">
-            <!-- Checklist content will be rendered here by JavaScript -->
-            <div class="text-center p-8 text-slate-500 text-lg">
-                Loading checklist. Please wait...
-            </div>
+        {/* Main Content */}
+        <div className="flex-1 overflow-y-auto">
+          <Checklist
+            filteredData={filteredData}
+            checkedItems={checkedItems}
+            expandedCategories={expandedCategories}
+            expandedItems={expandedItems}
+            onToggleCategoryExpand={toggleCategoryExpand}
+            onToggleItemExpand={toggleItemExpand}
+            onToggleChecked={handleToggleChecked}
+            notes={notes}
+            onNoteChange={handleNoteChange}
+          />
         </div>
-
-        <!-- Footer for context -->
-        <footer class="mt-12 text-center text-sm text-slate-500">
-            <p>Data persistence powered by Google Firestore and your unique user ID.</p>
-        </footer>
+      </main>
     </div>
-</body>
-</html>
+  );
+}
